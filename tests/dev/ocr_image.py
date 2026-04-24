@@ -19,6 +19,7 @@ from paddleocr import PaddleOCR
 
 from scraper.extract_table import ocr_to_rows
 from scraper.main import load_config
+from scraper.util import binarize
 
 RESOURCES = Path(__file__).parents[1] / "resources"
 DEFAULT_IMAGE = RESOURCES / "test_image01.png"
@@ -55,24 +56,54 @@ def main() -> None:
         frame = cv2.bitwise_not(frame)
         print("Frame inverted (white-on-dark → dark-on-light)")
 
-    ocr = PaddleOCR(use_angle_cls=True, lang=cfg.get("lang", "ch"), enable_mkldnn=False)
-    ocr_result = ocr.predict(frame)
+    if cfg.get("binarize", False):
+        frame = binarize(frame)
+        print("Frame binarized (Otsu's threshold)")
 
-    # ── raw result ────────────────────────────────────────────────────────────
-    print("\n── RAW OCR RESULT ───────────────────────────────────────────────")
-    print(f"Type: {type(ocr_result).__name__}, length: {len(ocr_result)}")
-    if ocr_result:
+    ocr_pad = cfg.get("ocr_padding", 0)
+    if ocr_pad:
+        frame = cv2.copyMakeBorder(
+            frame, ocr_pad, ocr_pad, ocr_pad, ocr_pad,
+            cv2.BORDER_CONSTANT, value=(255, 255, 255),
+        )
+        print(f"OCR padding applied: {ocr_pad}px white border on all sides")
+
+    # Save the preprocessed frame so you can inspect what OCR actually sees.
+    debug_path = image_path.parent / f"{image_path.stem}_preprocessed.png"
+    cv2.imwrite(str(debug_path), frame)
+    print(f"Preprocessed frame saved to: {debug_path}")
+
+    # PaddleOCR expects RGB; OpenCV loads BGR.
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    ocr = PaddleOCR(use_angle_cls=True, lang=cfg.get("lang", "ch"), enable_mkldnn=False)
+    ocr_result = ocr.predict(frame_rgb)
+
+    # ── raw detections ────────────────────────────────────────────────────────
+    print("\n── RAW DETECTIONS ───────────────────────────────────────────────")
+    if not ocr_result:
+        print("  (empty result)")
+    else:
         page = ocr_result[0]
-        print(f"ocr_result[0] type: {type(page).__name__}")
-        if isinstance(page, dict):
-            print(f"Keys: {list(page.keys())}")
-            for key, val in page.items():
-                preview = repr(val)[:120] if not isinstance(val, list) else f"[{len(val)} items]"
-                print(f"  {key}: {preview}")
-                if isinstance(val, list) and val:
-                    print(f"    first item: {repr(val[0])[:200]}")
+        if not isinstance(page, dict) or "rec_texts" not in page:
+            print(f"  Unexpected format — type={type(page).__name__}, "
+                  f"keys={list(page.keys()) if isinstance(page, dict) else 'n/a'}")
         else:
-            print(repr(page)[:400])
+            texts  = page.get("rec_texts",  [])
+            scores = page.get("rec_scores", [])
+            polys  = page.get("rec_polys",  [])
+            print(f"  {len(texts)} detection(s)\n")
+            print(f"  {'#':<4}  {'score':>6}  {'x_left':>7}  {'x_right':>8}  {'y_top':>6}  {'y_bot':>6}  text")
+            print(f"  {'-'*4}  {'-'*6}  {'-'*7}  {'-'*8}  {'-'*6}  {'-'*6}  ----")
+            for i, (text, score, pts) in enumerate(zip(texts, scores, polys)):
+                if pts is not None and len(pts):
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    x1, x2 = int(min(xs)), int(max(xs))
+                    y1, y2 = int(min(ys)), int(max(ys))
+                else:
+                    x1 = x2 = y1 = y2 = -1
+                print(f"  {i:<4}  {score:>6.3f}  {x1:>7}  {x2:>8}  {y1:>6}  {y2:>6}  {text!r}")
 
     # ── parsed rows ───────────────────────────────────────────────────────────
     print("\n── PARSED ROWS ─────────────────────────────────────────────────")
@@ -80,13 +111,14 @@ def main() -> None:
         ocr_result,
         min_confidence=0.0,
         frame_h=frame.shape[0],
-        margin=0,
-        row_y_tolerance=cfg.get("row_y_tolerance", 15),
+        margin=ocr_pad,
+        row_y_tolerance=cfg.get("row_y_tolerance", 25),
     )
     print(f"Rows found: {len(rows)}")
     for i, row in enumerate(rows):
-        cells = [(c.text, f"({c.x1},{c.y1},{c.x2},{c.y2})") for c in row]
-        print(f"  Row {i + 1}: {cells}")
+        print(f"\n  Row {i + 1}:")
+        for j, cell in enumerate(row):
+            print(f"    Cell {j + 1}: '{cell.text}'  bbox=({cell.x1},{cell.y1},{cell.x2},{cell.y2})")
 
 
 if __name__ == "__main__":

@@ -37,12 +37,10 @@ def ocr_to_rows(
 
     page = ocr_result[0]
 
-    # Log the result structure once so format issues are visible without --debug.
+    # Log the result structure once per process so format issues are visible without --debug.
     if not hasattr(ocr_to_rows, "_format_logged"):
-        logger.info("OCR result format — type: %s, keys: %s, first item: %s",
-                    type(page).__name__,
-                    list(page.keys()) if isinstance(page, dict) else "n/a",
-                    repr(page)[:200])
+        keys = list(page.keys()) if isinstance(page, dict) else "n/a"
+        logger.info("OCR result format — type: %s, keys: %s", type(page).__name__, keys)
         ocr_to_rows._format_logged = True  # type: ignore[attr-defined]
 
     # PaddleOCR 3.x predict() wraps detections under a 'res' key, each entry
@@ -51,7 +49,13 @@ def ocr_to_rows(
     # 'rec_text', 'rec_score'. Fall back to the 2.x list-of-pairs format last.
     detections: list[tuple] = []
     if isinstance(page, dict):
-        if "res" in page:
+        if "rec_texts" in page:
+            # PaddleOCR 3.x OCRResult (rec_polys are 4-point polygons)
+            polys  = page.get("rec_polys",  [])
+            texts  = page.get("rec_texts",  [])
+            scores = page.get("rec_scores", [])
+            detections = list(zip(polys, texts, scores))
+        elif "res" in page:
             for item in page["res"]:
                 pts  = item.get("text_region") or item.get("bbox") or []
                 text = item.get("text", "")
@@ -71,13 +75,23 @@ def ocr_to_rows(
 
     # (y_center, x_center, text, x1, y1, x2, y2)
     cells: list[tuple] = []
+    conf_dropped = 0
+    margin_dropped = 0
     for pts, text, conf in detections:
         if conf < min_confidence or not str(text).strip():
+            conf_dropped += 1
+            logger.debug("Detection dropped (conf=%.3f < %.2f): %r", conf, min_confidence, text)
+            continue
+        if pts is None or len(pts) == 0:
+            logger.debug("Skipping detection with empty bbox: '%s'", text)
             continue
         ys = [p[1] for p in pts]
         xs = [p[0] for p in pts]
         y_top, y_bot = min(ys), max(ys)
         if y_top < margin or y_bot > frame_h - margin:
+            margin_dropped += 1
+            logger.debug("Detection dropped by margin (y=%d-%d, margin=%d, frame_h=%d): %r",
+                         y_top, y_bot, margin, frame_h, text)
             continue
         x_left, x_right = min(xs), max(xs)
         cells.append((
@@ -88,6 +102,11 @@ def ocr_to_rows(
         ))
 
     if not cells:
+        if conf_dropped or margin_dropped:
+            logger.info(
+                "0 cells kept — conf_dropped=%d (min=%.2f), margin_dropped=%d (margin=%d, frame_h=%d)",
+                conf_dropped, min_confidence, margin_dropped, margin, frame_h,
+            )
         return []
 
     cells.sort(key=lambda c: c[0])

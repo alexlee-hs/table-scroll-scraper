@@ -15,6 +15,24 @@ def is_blurry(gray: np.ndarray, threshold: float) -> bool:
     return cv2.Laplacian(gray, cv2.CV_64F).var() < threshold
 
 
+def binarize(bgr: np.ndarray) -> np.ndarray:
+    """Adaptive threshold on grayscale → 3-channel binary image for OCR.
+    Pads with replicated edge pixels before thresholding so the local neighbourhood
+    is not biased by zero-padding near the frame edges (where outer columns sit)."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    pad = 16  # half blockSize — ensures every pixel has a full neighbourhood
+    padded = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+    binary = cv2.adaptiveThreshold(
+        padded, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31,
+        C=10,
+    )
+    binary = binary[pad:-pad, pad:-pad]
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+
 def phash_of(bgr: np.ndarray) -> imagehash.ImageHash:
     return imagehash.phash(Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
 

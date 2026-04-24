@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import sys
+from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from tqdm import tqdm
 from scraper.digit_recognition import DigitRecogniser
 from scraper.extract_table import ocr_to_rows, validate_row
 from scraper.read_video import FrameStats, iter_frames, video_info
+from scraper.util import binarize
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,38 @@ _CONFIG_PATH = Path(__file__).parent / "config" / "config.json"
 def load_config() -> dict:
     with _CONFIG_PATH.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def _deduplicate(results: list[tuple]) -> list[tuple]:
+    groups: dict = defaultdict(list)
+    for name, v1, v2 in results:
+        groups[name].append((v1, v2))
+
+    deduped = []
+    for name, pairs in groups.items():
+        v1_vals: list[int] = []
+        v2_vals: list[int] = []
+        for v1, v2 in pairs:
+            try:
+                if v1:
+                    v1_vals.append(int(v1))
+            except ValueError:
+                pass
+            try:
+                if v2:
+                    n = int(v2)
+                    if n < 1000:
+                        v2_vals.append(n)
+            except ValueError:
+                pass
+        best_v1 = Counter(v1_vals).most_common(1)[0][0] if v1_vals else None
+        best_v2 = Counter(v2_vals).most_common(1)[0][0] if v2_vals else None
+        deduped.append((
+            name,
+            str(best_v1) if best_v1 is not None else "",
+            str(best_v2) if best_v2 is not None else "",
+        ))
+    return deduped
 
 
 def resolve_date(cfg: dict, override: str | None) -> str:
@@ -46,10 +80,11 @@ def run(
     hash_diff: int,
     frame_skip: int,
     min_confidence: float,
-    margin: int,
     row_y_tolerance: int,
     name_match_cutoff: float,
     invert_frame: bool = False,
+    binarize_frame: bool = False,
+    ocr_padding: int = 0,
 ) -> None:
     info = video_info(video_path)
     logger.info("Video: %.1f fps, %d frames total", info["fps"], info["total_frames"])
@@ -82,19 +117,28 @@ def run(
             stats=stats,
             on_frame=bar.update,
         ):
-            frame_h = frame.shape[0]
             ocr_input = cv2.bitwise_not(frame) if invert_frame else frame
-            ocr_result = ocr.predict(ocr_input)
-            rows = ocr_to_rows(ocr_result, min_confidence, frame_h, margin, row_y_tolerance)
+            if binarize_frame:
+                ocr_input = binarize(ocr_input)
+            if ocr_padding:
+                ocr_input = cv2.copyMakeBorder(
+                    ocr_input, ocr_padding, ocr_padding, ocr_padding, ocr_padding,
+                    cv2.BORDER_CONSTANT, value=(255, 255, 255),
+                )
+            frame_h = ocr_input.shape[0]
+            ocr_result = ocr.predict(cv2.cvtColor(ocr_input, cv2.COLOR_BGR2RGB))
+            rows = ocr_to_rows(ocr_result, min_confidence, frame_h, ocr_padding, row_y_tolerance)
             total_detections += len(rows)
 
             for row in rows:
                 text_row = []
                 for i, cell in enumerate(row):
                     if i > 0 and use_digit_rec:
+                        # Cell coordinates are in padded-frame space; subtract the
+                        # padding to get the correct crop from the original frame.
                         crop_img = frame[
-                            max(0, cell.y1):cell.y2,
-                            max(0, cell.x1):cell.x2,
+                            max(0, cell.y1 - ocr_padding):max(1, cell.y2 - ocr_padding),
+                            max(0, cell.x1 - ocr_padding):max(1, cell.x2 - ocr_padding),
                         ]
                         recognised = digit_rec.read_number(crop_img)
                         text_row.append(recognised if recognised is not None else cell.text)
@@ -119,6 +163,9 @@ def run(
         "Rows    — detected: %d, rejected: %d, unique kept: %d",
         total_detections, total_rejected, len(results),
     )
+
+    results = _deduplicate(results)
+    logger.info("After deduplication: %d unique rows", len(results))
 
     out = Path(output_csv)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -181,8 +228,9 @@ def main() -> None:
         hash_diff=cfg["hash_diff"],
         frame_skip=cfg["frame_skip"],
         min_confidence=cfg["min_confidence"],
-        margin=cfg["edge_margin"],
         row_y_tolerance=cfg["row_y_tolerance"],
         name_match_cutoff=cfg["name_match_cutoff"],
         invert_frame=cfg.get("invert_frame", False),
+        binarize_frame=cfg.get("binarize", False),
+        ocr_padding=cfg.get("ocr_padding", 0),
     )
