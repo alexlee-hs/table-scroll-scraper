@@ -1,0 +1,18 @@
+{
+  "video_prefix": "./videos/gb_scores_",
+  "video_date": null,
+  "video_extension": ".mp4",
+  "output_csv": "output.csv",
+  "names_file": "members.json",
+  "digits_dir": "digits",
+  "crop": null,
+  "invert_frame": true,
+  "blur_threshold": 80,
+  "motion_threshold": 8,
+  "hash_diff": 8,
+  "frame_skip": 2,
+  "min_confidence": 0.6,
+  "edge_margin": 20,
+  "row_y_tolerance": 15,
+  "name_match_cutoff": 0.72
+}
