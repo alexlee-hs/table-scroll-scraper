@@ -29,34 +29,15 @@ def load_config() -> dict:
 
 
 def _deduplicate(results: list[tuple]) -> list[tuple]:
-    groups: dict = defaultdict(list)
-    for name, v1, v2 in results:
-        groups[name].append((v1, v2))
+    groups = defaultdict(list)
+    for row in results:
+        groups[row[0]].append(row)
 
     deduped = []
-    for name, pairs in groups.items():
-        v1_vals: list[int] = []
-        v2_vals: list[int] = []
-        for v1, v2 in pairs:
-            try:
-                if v1:
-                    v1_vals.append(int(v1))
-            except ValueError:
-                pass
-            try:
-                if v2:
-                    n = int(v2)
-                    if n < 1000:
-                        v2_vals.append(n)
-            except ValueError:
-                pass
-        best_v1 = Counter(v1_vals).most_common(1)[0][0] if v1_vals else None
-        best_v2 = Counter(v2_vals).most_common(1)[0][0] if v2_vals else None
-        deduped.append((
-            name,
-            str(best_v1) if best_v1 is not None else "",
-            str(best_v2) if best_v2 is not None else "",
-        ))
+    for name, rows in groups.items():
+        v1 = Counter(r[1] for r in rows if r[1]).most_common(1)
+        v2 = Counter(r[2] for r in rows if r[2]).most_common(1)
+        deduped.append((name, v1[0][0] if v1 else "", v2[0][0] if v2 else ""))
     return deduped
 
 
@@ -85,6 +66,7 @@ def run(
     invert_frame: bool = False,
     binarize_frame: bool = False,
     ocr_padding: int = 0,
+    use_angle_cls: bool = False,
 ) -> None:
     info = video_info(video_path)
     logger.info("Video: %.1f fps, %d frames total", info["fps"], info["total_frames"])
@@ -99,7 +81,7 @@ def run(
 
     use_digit_rec = digit_rec is not None and digit_rec.is_ready()
     logging.getLogger("ppocr").setLevel(logging.WARNING)
-    ocr = PaddleOCR(use_angle_cls=True, lang="ch", enable_mkldnn=False)
+    ocr = PaddleOCR(use_angle_cls=use_angle_cls, lang="ch", enable_mkldnn=False)
     stats = FrameStats()
     seen_rows: set[tuple] = set()
     results: list[tuple] = []
@@ -134,13 +116,13 @@ def run(
                 text_row = []
                 for i, cell in enumerate(row):
                     if i > 0 and use_digit_rec:
-                        # Cell coordinates are in padded-frame space; subtract the
-                        # padding to get the correct crop from the original frame.
-                        crop_img = frame[
-                            max(0, cell.y1 - ocr_padding):max(1, cell.y2 - ocr_padding),
-                            max(0, cell.x1 - ocr_padding):max(1, cell.x2 - ocr_padding),
-                        ]
-                        recognised = digit_rec.read_number(crop_img)
+                        h, w = frame.shape[:2]
+                        y1 = max(0, cell.y1 - ocr_padding)
+                        y2 = min(h, cell.y2 - ocr_padding)
+                        x1 = max(0, cell.x1 - ocr_padding)
+                        x2 = min(w, cell.x2 - ocr_padding)
+                        crop_img = frame[y1:y2, x1:x2]
+                        recognised = digit_rec.read_number(crop_img) if crop_img.size else None
                         text_row.append(recognised if recognised is not None else cell.text)
                     else:
                         text_row.append(cell.text)
@@ -233,4 +215,5 @@ def main() -> None:
         invert_frame=cfg.get("invert_frame", False),
         binarize_frame=cfg.get("binarize", False),
         ocr_padding=cfg.get("ocr_padding", 0),
+        use_angle_cls=cfg.get("use_angle_cls", False),
     )

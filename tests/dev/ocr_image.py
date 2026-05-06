@@ -76,7 +76,7 @@ def main() -> None:
     # PaddleOCR expects RGB; OpenCV loads BGR.
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    ocr = PaddleOCR(use_angle_cls=True, lang=cfg.get("lang", "ch"), enable_mkldnn=False)
+    ocr = PaddleOCR(use_angle_cls=cfg.get("use_angle_cls", False), lang=cfg.get("lang", "ch"), enable_mkldnn=False)
     ocr_result = ocr.predict(frame_rgb)
 
     # ── raw detections ────────────────────────────────────────────────────────

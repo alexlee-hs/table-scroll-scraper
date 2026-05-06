@@ -157,7 +157,10 @@ def validate_row(
         logger.debug("Row rejected: no numeric cells after '%s'", name_cell)
         return None
 
-    while len(nums) < 2:
-        nums.append("")
-
+    if len(nums) == 1:
+        if len(nums[0]) > 3:
+            return (name_cell, nums[0], "")
+        else:
+            return (name_cell, "", nums[0])
     return (name_cell, nums[0], nums[1])
+
